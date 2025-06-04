@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+openai
+groq
+litellm
+python-multipart  # For handling file uploads in FastAPI
+httpx  # For making HTTP requests
+fastapi-mcp  # For MCP server integration
+
+# Testing dependencies
+pytest
+pytest-asyncio
+pytest-httpx 
