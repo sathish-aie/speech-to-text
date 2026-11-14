@@ -1,196 +1,56 @@
 # Speech-to-Text MCP Server
 
-A high-performance Speech-to-Text server built with FastAPI that implements the Model Context Protocol (MCP) architecture. This server provides a unified interface for multiple STT providers (OpenAI Whisper, Groq) while following MCP standards for model serving and context management.
+A FastAPI transcription service. Its `POST /v1/transcribe` endpoint is also exposed as an MCP tool (`transcribe_audio`) through [fastapi-mcp](https://github.com/tadata-org/fastapi_mcp), so MCP clients such as Claude Desktop or an IDE agent can call it directly.
 
-## 🎯 About MCP
+## What it does
 
-The Model Context Protocol (MCP) is a standardized protocol for model serving that:
-- Defines how AI models should expose their capabilities
-- Manages model contexts and state
-- Provides consistent interfaces across different model providers
-- Enables seamless model switching and fallback strategies
+1. **Preprocesses audio.** It accepts any format FFmpeg can read, checks the duration with `ffprobe` (1 hour maximum by default), and converts the audio to 16 kHz mono PCM WAV.
+2. **Routes to a provider** through LiteLLM:
 
-Our STT server implements MCP through FastAPI-MCP, allowing:
-- Standardized model routing
-- Unified context handling
-- Consistent error management
-- Provider-agnostic model serving
+   | `engine` | Provider call |
+   | --- | --- |
+   | `distil-whisper` | Groq `distil-whisper-large-v3-en` |
+   | `gpt-4o`, `gpt-4o-mini` | OpenAI. Both currently call `whisper-1`; see [`adapters/openai/`](adapters/openai/). |
+   | `auto` | Picked by `DEFAULT_ENGINE_POLICY`: `high_accuracy` → gpt-4o, `cheap` → distil-whisper, `gpt-4o-mini` → gpt-4o-mini |
 
-## 🌟 Features
+3. **Returns** the text, the engine used, the duration and the detected language. Provider failures map to HTTP 502 and bad audio to HTTP 400.
 
-- **MCP Implementation**: 
-  - Full Model Context Protocol support
-  - FastAPI-MCP integration
-  - Standardized model interfaces
-  - Context-aware request handling
-- **Multi-Provider Support**: 
-  - OpenAI Whisper
-  - Groq
-  - Extensible architecture for adding more providers
-- **Audio Processing**:
-  - Automatic audio format conversion
-  - Sample rate normalization (16kHz)
-  - Duration validation
-  - Support for multiple input formats (wav, mp3, ogg, flac, m4a)
-- **API Features**:
-  - Fast async processing
-  - MCP-compliant provider selection
-  - Language detection and specification
-  - Comprehensive error handling
-  - Detailed logging
+## Project layout
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.9 or higher
-- FFmpeg installed on your system
-- Poetry for dependency management
-- API keys for providers (OpenAI, Groq)
-
-### Installation
-
-1. Clone the repository:
-```bash
-git clone <your-repository-url>
-cd stt
+```
+main.py              FastAPI app, /v1/transcribe, MCP mount
+router.py            engine selection and policy
+adapters/            one transcriber class per provider (OpenAI, Groq)
+audio_utils.py       ffprobe duration check + FFmpeg conversion
+config.py            settings from .env (pydantic-settings)
+schemas.py           request and response models
+common_exceptions.py provider and audio errors
 ```
 
-2. Install dependencies using Poetry:
+## Run it
+
+You need Python 3.12, FFmpeg on your PATH, and OpenAI and Groq API keys. Both keys are required at startup.
+
 ```bash
-poetry install
+pip install -r requirements.txt
+printf "OPENAI_API_KEY=...\nGROQ_API_KEY=...\n" > .env
+python main.py          # http://localhost:8000, MCP endpoint at /mcp
 ```
 
-3. Set up environment variables:
-```bash
-# Create .env file
-cp .env.example .env
-
-# Edit .env with your API keys
-OPENAI_API_KEY=sk-...
-GROQ_API_KEY=gk-...
-```
-
-### Running the Server
+## Example
 
 ```bash
-poetry run uvicorn stt.main:app --reload
-```
-
-The server will start at `http://localhost:8000`
-
-## 📝 API Usage
-
-### Transcribe Audio
-
-```bash
-curl -X POST "http://localhost:8000/v1/transcribe" \
-  -H "Content-Type: multipart/form-data" \
+curl -X POST http://localhost:8000/v1/transcribe \
   -F "file=@audio.mp3" \
   -F "engine=auto" \
   -F "language=auto"
 ```
 
-#### Parameters:
-
-- `file`: Audio file to transcribe
-- `engine`: Transcription engine choice (auto, openai, groq)
-- `language`: Language of the audio (auto for detection)
-
-#### Response:
-
 ```json
 {
-  "text": "Transcribed text content...",
-  "model": "openai/whisper-1",
+  "text": "Transcribed text...",
   "duration_ms": 12345,
+  "model": "gpt-4o-mini",
   "language": "en"
 }
 ```
-
-## ⚙️ Configuration
-
-### MCP Configuration
-```python
-# config.py
-MCP_CONFIG = {
-    "protocol_version": "1.0",
-    "provider_configs": {
-        "openai": {
-            "context_window": 240000,  # 4 minutes in ms
-            "max_tokens": None,  # No token limit for audio
-        },
-        "groq": {
-            "context_window": 300000,  # 5 minutes in ms
-            "max_tokens": None,
-        }
-    }
-}
-```
-
-### General Settings
-- `max_audio_duration_seconds`: Maximum allowed audio duration
-- `default_engine_policy`: MCP-based policy for selecting transcription engine
-- `default_engine`: Fallback engine if policy fails
-
-## 🔧 Development
-
-### Project Structure
-
-```
-stt/
-├── adapters/         # MCP-compliant provider implementations
-├── audio_utils.py    # Audio processing utilities
-├── config.py         # MCP and general configuration
-├── main.py          # FastAPI application and MCP routes
-├── router.py        # MCP-based model routing logic
-├── schemas.py       # Pydantic models and MCP schemas
-└── common_exceptions.py  # MCP-compliant exceptions
-```
-
-### Adding a New Provider
-
-1. Create a new MCP-compliant adapter in `adapters/`
-2. Implement the MCP provider interface:
-   ```python
-   class NewProviderAdapter(MCPModelAdapter):
-       async def process_context(self, context: MCPContext) -> MCPResponse:
-           # Implementation
-   ```
-3. Register the provider in `router.py`
-4. Update MCP configuration as needed
-
-### MCP Integration Example
-
-```python
-from fastapi_mcp import FastApiMCP, MCPContext
-
-@app.post("/v1/transcribe")
-async def transcribe_audio(context: MCPContext):
-    # MCP handles provider selection and execution
-    response = await mcp_router.process(context)
-    return response
-```
-
-## 📚 Documentation
-
-For more detailed information about MCP and its implementation:
-
-- [Model Context Protocol Specification](https://mcp-docs.example.com)
-- [FastAPI-MCP Documentation](https://fastapi-mcp.readthedocs.io/)
-- [MCP Provider Implementation Guide](https://mcp-docs.example.com/provider-guide)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🔗 Links
-
-- [Model Context Protocol](https://github.com/model-context-protocol/specification)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [FastAPI-MCP Documentation](https://fastapi-mcp.readthedocs.io/)
-- [LiteLLM Documentation](https://docs.litellm.ai/) 
